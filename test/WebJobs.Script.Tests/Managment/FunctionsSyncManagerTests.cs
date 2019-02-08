@@ -52,7 +52,7 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Managment
                 IsSelfHost = false,
                 LogPath = @"x:\tmp\log",
                 SecretsPath = @"x:\secrets",
-                TestDataPath = @"x:\test"
+                TestDataPath = @"x:\sampledata"
             };
 
             _vars = new Dictionary<string, string>
@@ -76,6 +76,25 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Managment
             var secretManagerProviderMock = new Mock<ISecretManagerProvider>(MockBehavior.Strict);
             var secretManagerMock = new Mock<ISecretManager>(MockBehavior.Strict);
             secretManagerProviderMock.SetupGet(p => p.Current).Returns(secretManagerMock.Object);
+            var hostSecretsInfo = new HostSecretsInfo();
+            hostSecretsInfo.MasterKey = "aaa";
+            hostSecretsInfo.FunctionKeys = new Dictionary<string, string>
+                {
+                    { "TestHostFunctionKey1", "aaa" },
+                    { "TestHostFunctionKey2", "bbb" }
+                };
+            hostSecretsInfo.SystemKeys = new Dictionary<string, string>
+                {
+                    { "TestSystemKey1", "aaa" },
+                    { "TestSystemKey2", "bbb" }
+                };
+            secretManagerMock.Setup(p => p.GetHostSecretsAsync()).ReturnsAsync(hostSecretsInfo);
+            Dictionary<string, string> functionSecretsResponse = new Dictionary<string, string>()
+                {
+                    { "TestFunctionKey1", "aaa" },
+                    { "TestFunctionKey2", "bbb" }
+                };
+            secretManagerMock.Setup(p => p.GetFunctionSecretsAsync("function1", false)).ReturnsAsync(functionSecretsResponse);
 
             var configuration = ScriptSettingsManager.BuildDefaultConfiguration();
             var hostIdProviderMock = new Mock<IHostIdProvider>(MockBehavior.Strict);
@@ -94,7 +113,7 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Managment
 
         private void ResetMockFileSystem(string hostJsonContent = null)
         {
-            var fileSystem = CreateFileSystem(_hostOptions.ScriptPath, hostJsonContent);
+            var fileSystem = CreateFileSystem(_hostOptions, hostJsonContent);
             FileUtility.Instance = fileSystem;
         }
 
@@ -130,15 +149,38 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Managment
             using (var env = new TestScopedEnvironmentVariable(_vars))
             {
                 // Act
-                var result = await _functionsSyncManager.TrySyncTriggersAsync();
-                var triggers = JArray.Parse(_contentBuilder.ToString());
+                var syncResult = await _functionsSyncManager.TrySyncTriggersAsync();
+                var result = JObject.Parse(_contentBuilder.ToString());
 
                 // Assert
-                Assert.True(result.Success, "SyncTriggers should return success true");
-                Assert.True(string.IsNullOrEmpty(result.Error), "Error should be null or empty");
+                Assert.True(syncResult.Success, "SyncTriggers should return success true");
+                Assert.True(string.IsNullOrEmpty(syncResult.Error), "Error should be null or empty");
 
                 // verify triggers
+                var triggers = result["triggers"];
                 Assert.Equal(_expectedSyncTriggersPayload, triggers.ToString(Formatting.None));
+
+                // verify functions
+                var functions = (JArray)result["functions"];
+                Assert.Equal(3, functions.Count);
+
+                // verify secrets
+                var secrets = (JObject)result["secrets"];
+                var hostSecrets = (JObject)secrets["host"];
+                Assert.Equal("aaa", (string)hostSecrets["master"]);
+                var hostFunctionSecrets = (JObject)hostSecrets["function"];
+                Assert.Equal("aaa", (string)hostFunctionSecrets["TestHostFunctionKey1"]);
+                Assert.Equal("bbb", (string)hostFunctionSecrets["TestHostFunctionKey2"]);
+                var systemSecrets = (JObject)hostSecrets["system"];
+                Assert.Equal("aaa", (string)systemSecrets["TestSystemKey1"]);
+                Assert.Equal("bbb", (string)systemSecrets["TestSystemKey2"]);
+
+                var functionSecrets = (JArray)secrets["function"];
+                Assert.Equal(1, functionSecrets.Count);
+                var function1Secrets = (JObject)functionSecrets[0];
+                Assert.Equal("function1", function1Secrets["name"]);
+                Assert.Equal("aaa", (string)function1Secrets["secrets"]["TestFunctionKey1"]);
+                Assert.Equal("bbb", (string)function1Secrets["secrets"]["TestFunctionKey2"]);
             }
         }
 
@@ -150,18 +192,25 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Managment
                 var hashBlob = await _functionsSyncManager.GetHashBlobAsync();
                 await hashBlob.DeleteIfExistsAsync();
 
-                var result = await _functionsSyncManager.TrySyncTriggersAsync(checkHash: true);
-                Assert.True(result.Success);
-                Assert.Null(result.Error);
+                var syncResult = await _functionsSyncManager.TrySyncTriggersAsync(checkHash: true);
+                Assert.True(syncResult.Success);
+                Assert.Null(syncResult.Error);
                 Assert.Equal(1, _mockHttpHandler.RequestCount);
-                var triggers = JArray.Parse(_contentBuilder.ToString());
+                var result = JObject.Parse(_contentBuilder.ToString());
+                var triggers = result["triggers"];
                 Assert.Equal(_expectedSyncTriggersPayload, triggers.ToString(Formatting.None));
                 string hash = await hashBlob.DownloadTextAsync();
                 Assert.Equal(64, hash.Length);
 
                 // verify log statements
                 var logMessages = _loggerProvider.GetAllLogMessages().Select(p => p.FormattedMessage).ToArray();
-                Assert.True(logMessages[0].StartsWith("SyncTriggers content: [{"));
+                Assert.True(logMessages[0].StartsWith("SyncTriggers content: {"));
+                var idx = logMessages[0].IndexOf('{');
+                var sanitizedContent = logMessages[0].Substring(idx);
+                var sanitizedObject = JObject.Parse(sanitizedContent);
+                JToken value = null;
+                var secretsLogged = sanitizedObject.TryGetValue("secrets", out value);
+                Assert.False(secretsLogged);
                 Assert.Equal("SyncTriggers call succeeded.", logMessages[1]);
                 Assert.Equal($"SyncTriggers hash updated to '{hash}'", logMessages[2]);
 
@@ -169,11 +218,11 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Managment
                 _loggerProvider.ClearAllLogMessages();
                 ResetMockFileSystem();
                 _mockHttpHandler.Reset();
-                result = await _functionsSyncManager.TrySyncTriggersAsync(checkHash: true);
+                syncResult = await _functionsSyncManager.TrySyncTriggersAsync(checkHash: true);
                 Assert.Equal(0, _mockHttpHandler.RequestCount);
                 Assert.Equal(0, _contentBuilder.Length);
-                Assert.True(result.Success);
-                Assert.Null(result.Error);
+                Assert.True(syncResult.Success);
+                Assert.Null(syncResult.Error);
 
                 logMessages = _loggerProvider.GetAllLogMessages().Select(p => p.FormattedMessage).ToArray();
                 Assert.Equal(1, logMessages.Length);
@@ -182,10 +231,10 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Managment
                 // simulate a function change resulting in a new hash value
                 ResetMockFileSystem("{}");
                 _mockHttpHandler.Reset();
-                result = await _functionsSyncManager.TrySyncTriggersAsync(checkHash: true);
+                syncResult = await _functionsSyncManager.TrySyncTriggersAsync(checkHash: true);
                 Assert.Equal(1, _mockHttpHandler.RequestCount);
-                Assert.True(result.Success);
-                Assert.Null(result.Error);
+                Assert.True(syncResult.Success);
+                Assert.Null(syncResult.Error);
             }
         }
 
@@ -198,19 +247,20 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Managment
                 await hashBlob.DeleteIfExistsAsync();
 
                 _mockHttpHandler.MockStatusCode = HttpStatusCode.InternalServerError;
-                var result = await _functionsSyncManager.TrySyncTriggersAsync(checkHash: true);
-                Assert.False(result.Success);
+                var syncResult = await _functionsSyncManager.TrySyncTriggersAsync(checkHash: true);
+                Assert.False(syncResult.Success);
                 string expectedErrorMessage = "SyncTriggers call failed. StatusCode=InternalServerError";
-                Assert.Equal(expectedErrorMessage, result.Error);
+                Assert.Equal(expectedErrorMessage, syncResult.Error);
                 Assert.Equal(1, _mockHttpHandler.RequestCount);
-                var triggers = JArray.Parse(_contentBuilder.ToString());
+                var result = JObject.Parse(_contentBuilder.ToString());
+                var triggers = result["triggers"];
                 Assert.Equal(_expectedSyncTriggersPayload, triggers.ToString(Formatting.None));
                 bool hashBlobExists = await hashBlob.ExistsAsync();
                 Assert.False(hashBlobExists);
 
                 // verify log statements
                 var logMessages = _loggerProvider.GetAllLogMessages().Select(p => p.FormattedMessage).ToArray();
-                Assert.True(logMessages[0].StartsWith("SyncTriggers content: [{"));
+                Assert.True(logMessages[0].StartsWith("SyncTriggers content: {"));
                 Assert.Equal(expectedErrorMessage, logMessages[1]);
             }
         }
@@ -278,8 +328,11 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Managment
             };
         }
 
-        private static IFileSystem CreateFileSystem(string rootPath, string hostJsonContent = null)
+        private static IFileSystem CreateFileSystem(ScriptApplicationHostOptions hostOptions, string hostJsonContent = null)
         {
+            string rootPath = hostOptions.ScriptPath;
+            string testDataPath = hostOptions.TestDataPath;
+
             var fullFileSystem = new FileSystem();
             var fileSystem = new Mock<IFileSystem>();
             var fileBase = new Mock<FileBase>();
@@ -299,9 +352,9 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Managment
             dirBase.Setup(d => d.EnumerateDirectories(rootPath))
                 .Returns(new[]
                 {
-                    @"x:\root\function1",
-                    @"x:\root\function2",
-                    @"x:\root\function3"
+                    Path.Combine(rootPath, "function1"),
+                    Path.Combine(rootPath, "function2"),
+                    Path.Combine(rootPath, "function3")
                 });
 
             var function1 = @"{
@@ -348,26 +401,42 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Managment
     }
   ]
 }";
-            var function1Stream = new MemoryStream(Encoding.UTF8.GetBytes(function1));
-            function1Stream.Position = 0;
-            var function2Stream = new MemoryStream(Encoding.UTF8.GetBytes(function2));
-            function2Stream.Position = 0;
-            var function3Stream = new MemoryStream(Encoding.UTF8.GetBytes(function3));
-            function3Stream.Position = 0;
+
             fileBase.Setup(f => f.Exists(Path.Combine(rootPath, @"function1\function.json"))).Returns(true);
             fileBase.Setup(f => f.Exists(Path.Combine(rootPath, @"function1\main.py"))).Returns(true);
             fileBase.Setup(f => f.ReadAllText(Path.Combine(rootPath, @"function1\function.json"))).Returns(function1);
-            fileBase.Setup(f => f.Open(Path.Combine(rootPath, @"function1\function.json"), It.IsAny<FileMode>(), It.IsAny<FileAccess>(), It.IsAny<FileShare>())).Returns(function1Stream);
+            fileBase.Setup(f => f.Open(Path.Combine(rootPath, @"function1\function.json"), It.IsAny<FileMode>(), It.IsAny<FileAccess>(), It.IsAny<FileShare>())).Returns(() =>
+            {
+                return new MemoryStream(Encoding.UTF8.GetBytes(function1));
+            });
+            fileBase.Setup(f => f.Open(Path.Combine(testDataPath, "function1.dat"), It.IsAny<FileMode>(), It.IsAny<FileAccess>(), It.IsAny<FileShare>())).Returns(() =>
+            {
+                return new MemoryStream(Encoding.UTF8.GetBytes(function1));
+            });
 
             fileBase.Setup(f => f.Exists(Path.Combine(rootPath, @"function2\function.json"))).Returns(true);
             fileBase.Setup(f => f.Exists(Path.Combine(rootPath, @"function2\main.js"))).Returns(true);
             fileBase.Setup(f => f.ReadAllText(Path.Combine(rootPath, @"function2\function.json"))).Returns(function2);
-            fileBase.Setup(f => f.Open(Path.Combine(rootPath, @"function2\function.json"), It.IsAny<FileMode>(), It.IsAny<FileAccess>(), It.IsAny<FileShare>())).Returns(function2Stream);
+            fileBase.Setup(f => f.Open(Path.Combine(rootPath, @"function2\function.json"), It.IsAny<FileMode>(), It.IsAny<FileAccess>(), It.IsAny<FileShare>())).Returns(() =>
+            {
+                return new MemoryStream(Encoding.UTF8.GetBytes(function2));
+            });
+            fileBase.Setup(f => f.Open(Path.Combine(testDataPath, "function2.dat"), It.IsAny<FileMode>(), It.IsAny<FileAccess>(), It.IsAny<FileShare>())).Returns(() =>
+            {
+                return new MemoryStream(Encoding.UTF8.GetBytes(function1));
+            });
 
             fileBase.Setup(f => f.Exists(Path.Combine(rootPath, @"function3\function.json"))).Returns(true);
             fileBase.Setup(f => f.Exists(Path.Combine(rootPath, @"function3\main.js"))).Returns(true);
             fileBase.Setup(f => f.ReadAllText(Path.Combine(rootPath, @"function3\function.json"))).Returns(function3);
-            fileBase.Setup(f => f.Open(Path.Combine(rootPath, @"function3\function.json"), It.IsAny<FileMode>(), It.IsAny<FileAccess>(), It.IsAny<FileShare>())).Returns(function3Stream);
+            fileBase.Setup(f => f.Open(Path.Combine(rootPath, @"function3\function.json"), It.IsAny<FileMode>(), It.IsAny<FileAccess>(), It.IsAny<FileShare>())).Returns(() =>
+            {
+                return new MemoryStream(Encoding.UTF8.GetBytes(function3));
+            });
+            fileBase.Setup(f => f.Open(Path.Combine(testDataPath, "function3.dat"), It.IsAny<FileMode>(), It.IsAny<FileAccess>(), It.IsAny<FileShare>())).Returns(() =>
+            {
+                return new MemoryStream(Encoding.UTF8.GetBytes(function1));
+            });
 
             return fileSystem.Object;
         }

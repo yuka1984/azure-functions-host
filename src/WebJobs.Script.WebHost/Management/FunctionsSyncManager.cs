@@ -128,6 +128,7 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost.Management
         {
             // only want to do background sync triggers when NOT
             // in standby mode and not running locally
+            // ContainerReady will be false locally - it's based on a DWAS environment flag
             return !environment.IsCoreToolsEnvironment() &&
                 !webHostEnvironment.InStandbyMode && environment.IsContainerReady();
         }
@@ -208,15 +209,64 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost.Management
             return _hashBlob;
         }
 
-        public async Task<JArray> GetSyncTriggersPayload()
+        public async Task<JObject> GetSyncTriggersPayload()
         {
+            // don't include proxies in cache data - portal
             var hostOptions = _applicationHostOptions.CurrentValue.ToHostOptions();
-            var functionsMetadata = WebFunctionsManager.GetFunctionsMetadata(hostOptions, _workerConfigs, _logger, includeProxies: true);
+            var functionsMetadata = WebFunctionsManager.GetFunctionsMetadata(hostOptions, _workerConfigs, _logger);
+            var secretsStorageType = Environment.GetEnvironmentVariable(EnvironmentSettingNames.AzureWebJobsSecretStorageType);
 
             // Add trigger information used by the ScaleController
             JObject result = new JObject();
             var triggers = await GetFunctionTriggers(functionsMetadata, hostOptions);
-            return new JArray(triggers);
+            result.Add("triggers", new JArray(triggers));
+
+            // Add functions details to the payload
+            JObject functions = new JObject();
+            string routePrefix = await WebFunctionsManager.GetRoutePrefix(hostOptions.RootScriptPath);
+            var functionDetails = await WebFunctionsManager.GetFunctionMetadataResponse(functionsMetadata, hostOptions);
+            result.Add("functions", new JArray(functionDetails.Select(p => JObject.FromObject(p))));
+
+            // Add functions secrets to the payload
+            // Only secret types we own/control can we cache directly
+            // Encryption is handled by Antares before storage
+            if (string.IsNullOrEmpty(secretsStorageType) ||
+                string.Compare(secretsStorageType, "files", StringComparison.OrdinalIgnoreCase) == 0 ||
+                string.Compare(secretsStorageType, "blob", StringComparison.OrdinalIgnoreCase) == 0)
+            {
+                JObject secrets = new JObject();
+                result.Add("secrets", secrets);
+
+                // add host secrets
+                var hostSecretsInfo = await _secretManagerProvider.Current.GetHostSecretsAsync();
+                var hostSecrets = new JObject();
+                hostSecrets.Add("master", hostSecretsInfo.MasterKey);
+                hostSecrets.Add("function", JObject.FromObject(hostSecretsInfo.FunctionKeys));
+                hostSecrets.Add("system", JObject.FromObject(hostSecretsInfo.SystemKeys));
+                secrets.Add("host", hostSecrets);
+
+                // add function secrets
+                var functionSecrets = new JArray();
+                var httpFunctions = functionsMetadata.Where(p => !p.IsProxy && p.InputBindings.Any(q => q.IsTrigger && string.Compare(q.Type, "httptrigger", StringComparison.OrdinalIgnoreCase) == 0)).Select(p => p.Name);
+                foreach (var functionName in httpFunctions)
+                {
+                    var currSecrets = await _secretManagerProvider.Current.GetFunctionSecretsAsync(functionName);
+                    var currElement = new JObject()
+                    {
+                        { "name", functionName },
+                        { "secrets", JObject.FromObject(currSecrets) }
+                    };
+                    functionSecrets.Add(currElement);
+                }
+                secrets.Add("function", functionSecrets);
+            }
+            else
+            {
+                // TODO: handle other external key storage types
+                // like KeyVault when the feature comes online
+            }
+
+            return result;
         }
 
         internal async Task<IEnumerable<JObject>> GetFunctionTriggers(IEnumerable<FunctionMetadata> functionsMetadata, ScriptJobHostOptions hostOptions)
@@ -328,7 +378,11 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost.Management
         {
             var token = SimpleWebTokenHelper.CreateToken(DateTime.UtcNow.AddMinutes(5));
 
-            _logger.LogDebug($"SyncTriggers content: {content}");
+            // sanitize the content before logging
+            var sanitizedContent = JObject.Parse(content);
+            sanitizedContent.Remove("secrets");
+            string sanitizedContentString = sanitizedContent.ToString();
+            _logger.LogDebug($"SyncTriggers content: {sanitizedContentString}");
 
             using (var request = BuildSetTriggersRequest())
             {
