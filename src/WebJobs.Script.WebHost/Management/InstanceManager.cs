@@ -3,9 +3,11 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Net.Http;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using Microsoft.Azure.WebJobs.Script.WebHost.Configuration;
 using Microsoft.Azure.WebJobs.Script.WebHost.Models;
@@ -137,17 +139,65 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost.Management
             {
                 // download zip and extract
                 var zipUri = new Uri(zipPath);
-                var filePath = Path.GetTempFileName();
-                await DownloadAsync(zipUri, filePath);
+                var filePath = await DownloadAsync(zipUri);
 
-                _logger.LogInformation($"Extracting files to '{options.ScriptPath}'");
-                ZipFile.ExtractToDirectory(filePath, options.ScriptPath, overwriteFiles: true);
+                UnpackPackage(filePath, options.ScriptPath);
+            }
+        }
+
+        private void UnpackPackage(string filePath, string scriptPath)
+        {
+            if (_environment.IsMountEnabled() && RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+            {
+                BashRun($"mkdir -p {scriptPath}");
+                // try squashfs
+                if (filePath.EndsWith(".squashfs", StringComparison.OrdinalIgnoreCase) ||
+                    filePath.EndsWith(".img", StringComparison.OrdinalIgnoreCase))
+                {
+                    BashRun($"squashfs_ll {filePath} {scriptPath}");
+                }
+                else if (filePath.EndsWith(".zip"))
+                {
+                    // fuse-zip
+                    BashRun($"fuse-zip -r {filePath} {scriptPath}");
+                }
+                else
+                {
+                    // not supported?
+                }
+            }
+            else
+            {
+                _logger.LogInformation($"Extracting files to '{scriptPath}'");
+                ZipFile.ExtractToDirectory(filePath, scriptPath, overwriteFiles: true);
                 _logger.LogInformation($"Zip extraction complete");
             }
         }
 
-        private async Task DownloadAsync(Uri zipUri, string filePath)
+        private (int, string, string) BashRun(string command)
         {
+            var process = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "bash",
+                    Arguments = $"-c \"{command}\"",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                }
+            };
+            process.Start();
+            var output = process.StandardOutput.ReadToEnd();
+            var error = process.StandardError.ReadToEnd();
+            process.WaitForExit();
+            return (process.ExitCode, output, error);
+        }
+
+        private async Task<string> DownloadAsync(Uri zipUri)
+        {
+            var filePath = Path.Combine(Path.GetTempPath(), Path.GetFileName(zipUri.AbsolutePath));
             var zipPath = $"{zipUri.Authority}{zipUri.AbsolutePath}";
             _logger.LogInformation($"Downloading zip contents from '{zipPath}' to temp file '{filePath}'");
 
@@ -166,6 +216,7 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost.Management
             }
 
             _logger.LogInformation($"{response.Content.Headers.ContentLength} bytes downloaded");
+            return filePath;
         }
 
         public IDictionary<string, string> GetInstanceInfo()
