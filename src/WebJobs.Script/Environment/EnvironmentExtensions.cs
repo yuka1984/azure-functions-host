@@ -156,6 +156,6 @@ namespace Microsoft.Azure.WebJobs.Script
         {
             var mountEnabled = environment.GetEnvironmentVariable(MountEnabled);
             return !string.IsNullOrEmpty(mountEnabled) && string.Equals(mountEnabled, "1");
-        }
+        }
     }
 }
