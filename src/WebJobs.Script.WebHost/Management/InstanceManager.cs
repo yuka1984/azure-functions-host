@@ -78,25 +78,25 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost.Management
             }
         }
 
-        public async Task<string> ValidateContext(HostAssignmentContext assignmentContext)
+        public Task<string> ValidateContext(HostAssignmentContext assignmentContext)
         {
             _logger.LogInformation($"Validating host assignment context (SiteId: {assignmentContext.SiteId}, SiteName: '{assignmentContext.SiteName}')");
 
-            var zipUrl = assignmentContext.ZipUrl;
-            if (!string.IsNullOrEmpty(zipUrl))
-            {
-                // make sure the zip uri is valid and accessible
-                var request = new HttpRequestMessage(HttpMethod.Head, zipUrl);
-                var response = await _client.SendAsync(request);
-                if (!response.IsSuccessStatusCode)
-                {
-                    string error = $"Invalid zip url specified (StatusCode: {response.StatusCode})";
-                    _logger.LogError(error);
-                    return error;
-                }
-            }
+            // var zipUrl = assignmentContext.ZipUrl;
+            // if (!string.IsNullOrEmpty(zipUrl))
+            // {
+            //     // make sure the zip uri is valid and accessible
+            //     var request = new HttpRequestMessage(HttpMethod.Head, zipUrl);
+            //     var response = await _client.SendAsync(request);
+            //     if (!response.IsSuccessStatusCode)
+            //     {
+            //         string error = $"Invalid zip url specified (StatusCode: {response.StatusCode})";
+            //         _logger.LogError(error);
+            //         return error;
+            //     }
+            // }
 
-            return null;
+            return Task.FromResult<string>(null);
         }
 
         private async Task Assign(HostAssignmentContext assignmentContext)
@@ -154,7 +154,7 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost.Management
                 if (filePath.EndsWith(".squashfs", StringComparison.OrdinalIgnoreCase) ||
                     filePath.EndsWith(".img", StringComparison.OrdinalIgnoreCase))
                 {
-                    BashRun($"squashfs_ll {filePath} {scriptPath}");
+                    BashRun($"/squashfuse/squashfuse_ll {filePath} {scriptPath}");
                 }
                 else if (filePath.EndsWith(".zip"))
                 {
