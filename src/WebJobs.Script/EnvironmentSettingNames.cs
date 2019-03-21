@@ -26,6 +26,8 @@ namespace Microsoft.Azure.WebJobs.Script
         public const string ProxySiteExtensionEnabledKey = "ROUTING_EXTENSION_VERSION";
         public const string FunctionsExtensionVersion = "FUNCTIONS_EXTENSION_VERSION";
         public const string WebsiteAuthEncryptionKey = "WEBSITE_AUTH_ENCRYPTION_KEY";
+        public const string SkipSslValidation = "SCM_SKIP_SSL_VALIDATION";
+        public const string CoreToolsEnvironment = "FUNCTIONS_CORETOOLS_ENVIRONMENT";
 
         /// <summary>
         /// Environment variable dynamically set by the platform when it is safe to

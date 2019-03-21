@@ -218,6 +218,7 @@ namespace Microsoft.Azure.WebJobs.Script.WebHost
             var scriptHostConfig = new ScriptHostConfiguration
             {
                 RootScriptPath = settings.ScriptPath,
+                TestDataPath = settings.TestDataPath,
                 RootLogPath = settings.LogPath,
                 FileLoggingMode = FileLoggingMode.DebugOnly,
                 TraceWriter = settings.TraceWriter,

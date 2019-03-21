@@ -18,6 +18,7 @@ using Microsoft.Azure.WebJobs.Script.Eventing;
 using Microsoft.Azure.WebJobs.Script.WebHost;
 using Microsoft.Azure.WebJobs.Script.WebHost.Controllers;
 using Microsoft.Azure.WebJobs.Script.WebHost.Filters;
+using Microsoft.Azure.WebJobs.Script.WebHost.Management;
 using Microsoft.Azure.WebJobs.Script.WebHost.Models;
 using Moq;
 using WebJobs.Script.Tests;
@@ -51,7 +52,9 @@ namespace Microsoft.Azure.WebJobs.Script.Tests
             managerMock = new Mock<WebScriptHostManager>(MockBehavior.Strict, new object[] { config, new TestSecretManagerFactory(), eventManager.Object, _settingsManager, settings });
             managerMock.SetupGet(p => p.Instance).Returns(hostMock.Object);
 
-            testController = new AdminController(managerMock.Object, settings, new TestTraceWriter(TraceLevel.Verbose), null);
+            var syncManagerMock = new Mock<IFunctionsSyncManager>(MockBehavior.Strict);
+
+            testController = new AdminController(managerMock.Object, settings, new TestTraceWriter(TraceLevel.Verbose), null, syncManagerMock.Object);
         }
 
         [Fact]
