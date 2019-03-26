@@ -230,7 +230,9 @@ namespace Microsoft.Azure.WebJobs.Script
         internal static void ConfigureApplicationInsights(HostBuilderContext context, ILoggingBuilder builder)
         {
             string appInsightsKey = context.Configuration[EnvironmentSettingNames.AppInsightsInstrumentationKey];
-            if (!string.IsNullOrEmpty(appInsightsKey))
+
+            // Initializing AppInsights services during placeholder mode as well to avoid the cost of JITting these objects during specialization
+            if (!string.IsNullOrEmpty(appInsightsKey) || SystemEnvironment.Instance.IsPlaceholderModeEnabled())
             {
                 builder.AddApplicationInsights(o => o.InstrumentationKey = appInsightsKey);
                 builder.Services.ConfigureOptions<ApplicationInsightsLoggerOptionsSetup>();
