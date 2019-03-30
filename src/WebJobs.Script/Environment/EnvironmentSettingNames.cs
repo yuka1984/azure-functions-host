@@ -54,5 +54,9 @@ namespace Microsoft.Azure.WebJobs.Script
         public const string CoreToolsEnvironment = "FUNCTIONS_CORETOOLS_ENVIRONMENT";
 
         public const string ExtensionBundleSourceUri = "FUNCTIONS_EXTENSIONBUNDLE_SOURCE_URI";
+
+        public const string FunctionsLogPath = "FUNCTIONS_LOG_PATH";
+        public const string FunctionsSecretsPath = "FUNCTIONS_SECRETS_PATH";
+        public const string FunctionsTestDataPath = "FUNCTIONS_TEST_DATA_PATH";
     }
 }
